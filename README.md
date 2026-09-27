@@ -1,402 +1,81 @@
 # OralRevision
 
-Application web **locale / PWA** pour apprendre par coeur ses analyses lineaires de francais
-(les "oraux") avant l'examen. Vous collez le texte de vos oraux, l'application detecte
-automatiquement leur structure (introduction, mouvements, conclusion) grace a Gemini, puis vous
-aide a les memoriser par la lecture active, l'ecoute en boucle et la repetition espacee.
+A local web app / PWA for memorising the linear analyses ("oraux") I have to recite for the French bac. The app's interface is in French, since that's the language of the exam it's built for, but this README is in English.
 
-> **Regle d'or du projet :** Gemini ne reecrit jamais votre texte. Il sert uniquement a
-> **decouper et classer** ce que vous avez ecrit. Le contenu affiche, appris et lu a voix haute
-> reste **mot pour mot** celui que vous avez colle - titres des mouvements compris.
+## Why I built it
 
----
+For the bac oral, you write out a full literary analysis for each text on your list and then have to recite it from memory, word for word, on the day. Learning ten-plus pages of prose by heart is a different problem from understanding it, and I wanted something built specifically for that: read the text out loud on a loop, get tested on it with a fill-in-the-blanks mode, and have the app tell me which paragraphs I'm about to forget based on an actual schedule rather than my own guess.
 
-## Sommaire
+## What it does
 
-1. [Fonctionnalites](#fonctionnalites)
-2. [Prerequis](#prerequis)
-3. [Installation](#installation)
-4. [Configuration de la cle Gemini](#configuration-de-la-cle-gemini)
-5. [Lancer l'application](#lancer-lapplication)
-6. [Architecture](#architecture)
-7. [Le principe anti-reformulation](#le-principe-anti-reformulation)
-8. [La repetition espacee et le planning](#la-repetition-espacee-et-le-planning)
-9. [Les modes d'etude](#les-modes-detude)
-10. [Structure des fichiers](#structure-des-fichiers)
-11. [Donnees et confidentialite](#donnees-et-confidentialite)
-12. [Oral d'exemple preinstalle](#oral-dexemple-preinstalle)
-13. [Scripts npm](#scripts-npm)
-14. [Depannage](#depannage)
+- **Paste in your text**, and the app automatically detects its structure (introduction, "mouvements", conclusion) using Gemini. A validation screen shows you the proposed split so you can fix anything before saving.
+- **A full editor** to reword paragraph boundaries, merge or split sections, rename "mouvements", and change how a section is memorised.
+- **Active recall reading**: text hidden and revealed sentence by sentence, or a fill-in-the-blanks mode.
+- **Looped audio** using the browser's built-in speech synthesis (Web Speech API), with a choice of voice, speed, and pause between repeats.
+- **Spaced repetition**: each paragraph has a mastery level (0–5) that drives its next review date, and the intervals compress automatically as the exam gets closer.
+- **A daily session**: a prioritised review queue mixing paragraphs never seen, overdue ones, and weak spots.
+- **Special modes**: weak paragraphs only, mock exam (random draw), full recitation, fill-in-the-blanks, plan-only (structure recall).
+- **A dashboard** with a countdown, whether you're ahead or behind schedule, and a study streak.
+- **Import/export** of all your data as a JSON file, and it works offline once a text has been imported.
 
----
+## How it works
 
-## Fonctionnalites
+**The text never gets rewritten. That's the whole point.** The one rule the project is built around is that Gemini is only allowed to *cut and label* the text I pasted in, never rephrase it, since the entire exercise is reciting my own words. This is enforced at three layers, not just a prompt:
+1. The backend prompt (`server/prompts/parseOralPrompt.ts`) explicitly tells Gemini not to correct, simplify, summarise or rephrase anything, and to return only a JSON structure where each text fragment is copied verbatim from the original.
+2. The request forces a JSON response (`responseMimeType: application/json`), which rules out free-form prose coming back.
+3. On the client, `isExactSubstring` (in `src/api/geminiParser.ts`) re-checks every paragraph Gemini returns against the original text. Anything that isn't an exact substring gets flagged as a warning on the validation screen rather than silently accepted.
 
-- **Import intelligent** : collez un oral en texte brut, la structure (intro / mouvements /
-  conclusion / lecture) est detectee automatiquement.
-- **Validation avant enregistrement** : une page de relecture vous montre le decoupage propose,
-  signale les avertissements et vous laisse tout corriger avant de sauvegarder.
-- **Editeur complet** : modifier le texte, fusionner / diviser des paragraphes, renommer les
-  mouvements, changer le mode de memorisation d'une section.
-- **Lecture active** : texte cache puis devoile phrase par phrase, ou mode "texte a trous".
-- **Audio en boucle** : ecoute repetee d'un paragraphe via la synthese vocale du navigateur
-  (Web Speech API), avec choix de la voix, de la vitesse et de la pause entre repetitions.
-- **Repetition espacee** : chaque paragraphe possede un niveau de maitrise (0 a 5) qui pilote sa
-  prochaine date de revision ; les intervalles se compressent a l'approche de l'examen.
-- **Session du jour** : une file de revision priorisee (jamais vus, en retard, points faibles).
-- **Modes speciaux** : Points faibles, Examen blanc, Recitation complete, Texte a trous, Plan seul.
-- **Tableau de bord** : compte a rebours, avance / retard sur le planning, statistiques, serie de
-  jours d'etude.
-- **Import / export** : sauvegarde de toutes vos donnees dans un fichier JSON.
-- **Fonctionne hors-ligne** : apres l'import, plus besoin d'Internet ni du backend (PWA).
-- **Theme clair / sombre**.
+If the backend isn't running or has no API key, import falls back to a local parser (`src/utils/parseOralFallback.ts`) that splits on headings and blank lines instead. The app still works, just with a cruder split you then fix by hand.
 
----
+**Spaced repetition with exam-date compression.** Each paragraph has a mastery score from 0 to 5, and after each review you rate yourself, which recalculates the next review date (`src/scheduleAlgorithm.ts`). The "ideal" interval per mastery level ranges from same-day at 0 up to about two weeks at 5, but the interval actually applied is `min(idealInterval, max(1, floor(daysRemaining / 2)))`. In practice that means as the exam approaches, reviews get pulled closer together automatically: even a "mastered" paragraph gets revisited once more before the exam, and daily load rises mechanically in the last stretch instead of me having to notice and compensate manually. The daily session (`buildDailySession`) mixes never-seen paragraphs, overdue ones, and weak spots, alternating between different texts and sections to avoid drilling the same one repeatedly.
 
-## Prerequis
+**Architecture.** It's a React/Vite/Zustand frontend that does all the actual learning (and works standalone), plus a thin Express backend whose only job is to keep the Gemini API key off the client and apply the strict prompt. The frontend calls `POST /api/parse-oral` only at import time; everything else (reading, audio, scheduling, storage) runs entirely client-side against `localStorage`, which is also why the app keeps working offline once your texts are in.
 
-- **Node.js 18 ou plus** (teste avec Node 24).
-- Un navigateur moderne (Chrome, Edge ou Safari recommandes pour la synthese vocale).
-- **Optionnel** : une cle API Google Gemini pour l'import automatique. Sans cle, l'application
-  bascule sur un analyseur local (decoupage par titres / lignes vides).
+## Data and privacy
 
----
+Everything stays in your browser's `localStorage`. The only thing that ever leaves your machine is the pasted text sent to Gemini at import time, and only if you're running the backend with a key configured. Every change is saved automatically; you can export your entire dataset to a JSON file from Settings and reimport it later or on another device.
 
-## Installation
+## Running it locally
+
+Requires Node 18+ (tested on Node 24).
 
 ```bash
-# 1. Se placer dans le dossier du projet
-cd OralRevision
-
-# 2. Installer toutes les dependances (frontend + backend)
 npm install
-```
-
-Une seule commande suffit : le frontend et le backend partagent le meme `package.json`.
-
----
-
-## Configuration de la cle Gemini
-
-Le backend local sert uniquement a **cacher votre cle API** (elle ne doit jamais se retrouver dans
-le code du navigateur). Cette etape est **facultative** : sans elle, l'import utilise l'analyseur
-local de secours.
-
-1. Obtenez une cle sur https://aistudio.google.com/apikey
-2. Copiez le fichier d'exemple :
-
-   ```bash
-   # Windows (PowerShell)
-   Copy-Item server\.env.example server\.env
-
-   # macOS / Linux
-   cp server/.env.example server/.env
-   ```
-
-3. Ouvrez `server/.env` et renseignez votre cle :
-
-   ```ini
-   GEMINI_API_KEY=votre_cle_ici
-   GEMINI_MODEL=gemini-2.5-flash
-   PORT=8787
-   ```
-
-> `server/.env` est ignore par Git : votre cle ne sera jamais committee.
-
----
-
-## Lancer l'application
-
-### Tout lancer d'un coup (recommande)
-
-Demarre le frontend (Vite) **et** le backend (Express) en parallele :
-
-```bash
 npm run dev
 ```
 
-- Frontend : http://localhost:5173
-- Backend  : http://localhost:8787 (le frontend l'appelle automatiquement via un proxy `/api`)
+This starts the Vite frontend on `http://localhost:5173` and the Express backend on `http://localhost:8787` together (the frontend proxies `/api` to it automatically). You can also run them separately with `npm run dev:client` / `npm run dev:server`, or build for production with `npm run build` / `npm run preview`.
 
-### Lancer separement
-
-```bash
-npm run dev:client   # uniquement le frontend (Vite)
-npm run dev:server   # uniquement le backend (Express, rechargement a chaud)
-```
-
-### Version de production
+Gemini-based import is optional. Without a key, the app falls back to the local parser described above. To enable it:
 
 ```bash
-npm run build        # genere le site statique optimise dans dist/
-npm run preview      # sert le build de production en local
-npm run server       # lance le backend seul (sans rechargement)
+cp server/.env.example server/.env   # Windows: Copy-Item server\.env.example server\.env
 ```
 
-> **Usage sans backend :** une fois vos oraux importes, vous pouvez fermer le backend.
-> L'application continue de fonctionner entierement hors-ligne avec les donnees deja enregistrees.
+Then edit `server/.env`:
 
----
-
-## Architecture
-
-L'application est decoupee en deux parties independantes : un **frontend React** (toute
-l'experience d'apprentissage, qui fonctionne seul) et un **mince backend Express** (un simple
-relais securise vers Gemini).
-
-```
-                      +-------------------------------------------------+
-                      |                   NAVIGATEUR                    |
-                      |                                                 |
-   Vous collez        |   React + Vite + Zustand + Tailwind             |
-   un oral  --------> |                                                 |
-                      |   App.tsx (coquille : nav, theme, routeur)      |
-                      |     |                                           |
-                      |     v                                           |
-                      |   Vues (Dashboard, Import, Session, ...)        |
-                      |     |                 |                         |
-                      |     v                 v                         |
-                      |   store (donnees) +  scheduleAlgorithm (SRS)    |
-                      |     |                                           |
-                      |     v                                           |
-                      |   localStorage  <--- persistance automatique    |
-                      +-------------------|-----------------------------+
-                                          |  (uniquement a l'import)
-                                          v  POST /api/parse-oral
-                      +-------------------------------------------------+
-                      |             BACKEND LOCAL (Express)             |
-                      |   server/index.ts  ->  server/gemini.ts         |
-                      |   - garde la cle API secrete                    |
-                      |   - applique le prompt strict (parseOralPrompt) |
-                      |   - renvoie un JSON de structure (pas de texte   |
-                      |     reecrit)                                     |
-                      +-------------------|-----------------------------+
-                                          v
-                                    Google Gemini
+```ini
+GEMINI_API_KEY=your_key_here
+GEMINI_MODEL=gemini-2.5-flash
+PORT=8787
 ```
 
-### Couches du frontend
+`server/.env` is git-ignored, so the key never gets committed. A free key is available at https://aistudio.google.com/apikey. Once your texts are imported, you can close the backend entirely; the app keeps working offline from `localStorage`.
 
-| Couche                | Fichiers                                  | Role                                                        |
-| --------------------- | ----------------------------------------- | ----------------------------------------------------------- |
-| Types                 | `src/types.ts`                            | Modele de donnees (Oral, Section, Paragraph, reglages...)   |
-| Persistance           | `src/storage.ts`                          | Lecture / ecriture localStorage, export / import JSON       |
-| Etat global           | `src/store.ts`                            | Source de verite (Zustand), sauvegarde auto a chaque action |
-| Navigation            | `src/uiStore.ts`                          | Routeur interne base sur l'etat (non persiste)              |
-| Logique d'apprentissage | `src/scheduleAlgorithm.ts`              | Repetition espacee, planning, statistiques, session du jour |
-| Traitement texte      | `src/utils/textProcessing.ts`             | Decoupage en phrases, texte a trous, estimations            |
-| Import                | `src/api/geminiParser.ts`                 | Appel backend + verification anti-reformulation             |
-| Secours               | `src/utils/parseOralFallback.ts`          | Analyseur local quand le backend / Gemini est indisponible  |
-| Audio                 | `src/audio/useSpeechLoop.ts`              | Lecture en boucle via Web Speech API                        |
-| Interface             | `src/App.tsx`, `src/components/*`          | Coquille + toutes les vues et composants                    |
+## Scripts
 
-### Flux d'import
+| Script | What it does |
+| --- | --- |
+| `npm run dev` | Frontend + backend together (development) |
+| `npm run dev:client` / `dev:server` | Just the frontend (Vite) / just the backend (Express, hot reload) |
+| `npm run server` | Backend only, no hot reload |
+| `npm run build` | Production build into `dist/` |
+| `npm run preview` | Serve the production build locally |
+| `npm run typecheck` | `tsc --noEmit` over the whole project |
 
-1. Vous collez le texte dans **OralImporter**.
-2. `geminiParser` envoie le texte au backend (`POST /api/parse-oral`).
-3. Le backend interroge Gemini avec un **prompt strict** qui impose un JSON de structure.
-4. Chaque paragraphe renvoye est **verifie** : il doit etre une portion exacte du texte original.
-   Sinon, un avertissement est ajoute.
-5. La page **OralValidation** affiche le decoupage pour relecture / correction.
-6. Apres validation, l'oral est enregistre dans le store (et donc dans localStorage).
+## Limitations / what I'd do next
 
-Si le backend n'est pas lance ou n'a pas de cle, l'etape 2-3 est remplacee par
-`parseOralFallback` (decoupage local par titres et lignes vides) : l'import reste possible.
-
----
-
-## Le principe anti-reformulation
-
-C'est la contrainte centrale du projet. Apprendre un oral par coeur n'a de sens que si le texte
-n'est **jamais** modifie par la machine. Le projet l'applique a plusieurs niveaux :
-
-1. **Prompt strict** (`server/prompts/parseOralPrompt.ts`) : Gemini recoit l'ordre explicite de
-   ne pas corriger, ameliorer, simplifier, resumer ni reformuler ; de conserver les titres de
-   mouvements exactement ; et de repondre **uniquement** par un JSON de structure dont chaque
-   fragment de texte est copie tel quel depuis l'original.
-2. **Sortie JSON imposee** : le backend demande une reponse au format JSON (`responseMimeType:
-   application/json`), ce qui empeche toute prose libre.
-3. **Verification cote client** (`src/api/geminiParser.ts` + `isExactSubstring`) : chaque
-   paragraphe renvoye est compare au texte source. S'il n'en est pas une portion exacte, il est
-   signale par un avertissement dans la page de validation - rien n'est accepte en silence.
-4. **Aucun nettoyage destructif** : la preparation du texte pour l'audio ne touche ni au texte
-   affiche ni au texte sauvegarde.
-
-Autrement dit : Gemini ne fait que **poser des frontieres** (ou commence un mouvement, ou finit un
-paragraphe) et **coller des etiquettes** (intro, mouvement 1, conclusion...). Le contenu reste le
-votre, a la lettre.
-
----
-
-## La repetition espacee et le planning
-
-Chaque paragraphe possede un **niveau de maitrise** de 0 a 5. Apres chaque revision, vous notez
-votre aisance et l'algorithme (`src/scheduleAlgorithm.ts`) recalcule la prochaine date.
-
-| Score | Libelle        | Intervalle ideal      |
-| ----- | -------------- | --------------------- |
-| 0     | Inconnu        | aujourd'hui + demain  |
-| 1     | Tres faible    | 1 jour                |
-| 2     | Fragile        | 2 jours               |
-| 3     | Correct        | ~4 jours              |
-| 4     | Presque acquis | ~6 jours              |
-| 5     | Maitrise       | ~14 jours             |
-
-**Compression a l'approche de l'examen.** L'intervalle reel applique est :
-
-```
-intervalle = min(intervalle_ideal, max(1, floor(jours_restants / 2)))
-```
-
-Resultat : plus l'examen approche, plus les revisions se rapprochent automatiquement. Meme un
-paragraphe "maitrise" sera revu une derniere fois avant le jour J ; la charge quotidienne
-augmente mecaniquement dans la derniere ligne droite.
-
-**Session du jour.** `buildDailySession` construit une file priorisee en melangeant :
-paragraphes **jamais vus** (selon votre objectif quotidien), paragraphes **en retard**, et
-**points faibles**, en alternant les oraux et les sections pour eviter la monotonie. Le tableau de
-bord indique en permanence si vous etes **en avance ou en retard** sur le rythme necessaire pour
-tout maitriser a temps.
-
----
-
-## Les modes d'etude
-
-| Mode                  | A quoi il sert                                                              |
-| --------------------- | -------------------------------------------------------------------------- |
-| **Session du jour**   | La file de revision priorisee, calculee pour tenir le planning.            |
-| **Points faibles**    | Concentre la revision sur les paragraphes les moins maitrises.             |
-| **Examen blanc**      | Tire des paragraphes au hasard pour se mettre en situation.                |
-| **Recitation complete** | Affiche un oral en entier pour le reciter d'un trait.                     |
-| **Texte a trous**     | Masque des mots-cles a retrouver (rappel actif).                           |
-| **Plan seul**         | N'affiche que la structure (titres des mouvements) pour memoriser le plan. |
-
-Chaque paragraphe se travaille avec : texte masque puis devoile progressivement, bouton d'**ecoute
-en boucle**, et boutons de notation **0 a 5** qui alimentent la repetition espacee.
-
----
-
-## Structure des fichiers
-
-```
-OralRevision/
-├── index.html                      Point d'entree HTML
-├── package.json                    Dependances + scripts (frontend & backend)
-├── vite.config.ts                  Config Vite + PWA + proxy /api -> backend
-├── tailwind.config.js              Theme Tailwind (couleurs, police de lecture)
-├── postcss.config.js               PostCSS (Tailwind + autoprefixer)
-├── tsconfig.json                   Config TypeScript
-│
-├── public/
-│   └── icon.svg                    Icone de l'application (PWA)
-│
-├── src/
-│   ├── main.tsx                    Montage de React
-│   ├── App.tsx                     Coquille : barre laterale, theme, routeur de vues
-│   ├── index.css                   Styles de base + classes reutilisables (Tailwind)
-│   ├── vite-env.d.ts               Types d'environnement Vite / PWA
-│   │
-│   ├── types.ts                    Modele de donnees central
-│   ├── storage.ts                  Persistance localStorage + export / import
-│   ├── store.ts                    Etat global (Zustand) + sauvegarde auto
-│   ├── uiStore.ts                  Navigation interne (non persistee)
-│   ├── scheduleAlgorithm.ts        Repetition espacee, planning, statistiques
-│   │
-│   ├── api/
-│   │   └── geminiParser.ts         Appel backend + verification anti-reformulation
-│   │
-│   ├── audio/
-│   │   └── useSpeechLoop.ts        Lecture audio en boucle (Web Speech API)
-│   │
-│   ├── data/
-│   │   └── sampleOral.ts           Oral d'exemple preinstalle
-│   │
-│   ├── utils/
-│   │   ├── oralFactory.ts          Construction / reindexation des oraux
-│   │   ├── parseOralFallback.ts    Analyseur local de secours
-│   │   ├── textProcessing.ts       Phrases, texte a trous, estimations
-│   │   └── masteryUi.ts            Couleurs et libelles d'interface
-│   │
-│   └── components/
-│       ├── Dashboard.tsx           Tableau de bord
-│       ├── OralImporter.tsx        Import d'un oral (collage de texte)
-│       ├── OralValidation.tsx      Page de validation du decoupage
-│       ├── OralEditor.tsx          Edition complete d'un oral
-│       ├── OralList.tsx            Liste de tous les oraux
-│       ├── OralCard.tsx            Vignette d'un oral
-│       ├── ParagraphCard.tsx       Unite d'apprentissage (lecture / trous / audio / note)
-│       ├── AudioLoopButton.tsx     Bouton d'ecoute en boucle
-│       ├── ProgressStats.tsx       Barres de progression / maitrise
-│       ├── StudySession.tsx        Mode "session du jour"
-│       ├── WeakParagraphsMode.tsx  Mode "points faibles"
-│       ├── ExamMode.tsx            Mode "examen blanc"
-│       ├── FullOralMode.tsx        Mode "recitation complete"
-│       ├── PlanOnlyMode.tsx        Mode "plan seul"
-│       └── Settings.tsx            Reglages (date d'examen, objectif, audio, theme, donnees)
-│
-└── server/
-    ├── index.ts                    Serveur Express (GET /api/health, POST /api/parse-oral)
-    ├── gemini.ts                   Appel au SDK @google/genai
-    ├── prompts/
-    │   └── parseOralPrompt.ts      Prompt strict (structure uniquement, zero reformulation)
-    └── .env.example                Modele de configuration (a copier en server/.env)
-```
-
----
-
-## Donnees et confidentialite
-
-- **Tout reste dans votre navigateur.** Vos oraux et vos progres sont enregistres dans le
-  `localStorage` de votre machine. Rien n'est envoye sur un serveur distant... a l'exception du
-  texte transmis a Gemini **au moment de l'import** (et uniquement si vous utilisez le backend).
-- **Sauvegarde auto.** Chaque modification est immediatement persistee.
-- **Export / import.** Depuis les Reglages, exportez l'integralite de vos donnees dans un fichier
-  JSON (pour sauvegarde ou transfert vers un autre appareil), et reimportez-le quand vous voulez.
-- **Hors-ligne.** Grace a la PWA et au localStorage, l'application fonctionne sans connexion une
-  fois chargee.
-
----
-
-## Oral d'exemple preinstalle
-
-Au tout premier lancement, un oral complet est preinstalle : **un extrait du Mariage de Figaro
-(Beaumarchais)**, deja decoupe en mouvements. Il sert a decouvrir l'interface, tester les modes
-d'etude et l'audio sans rien importer.
-
-Vous pouvez le supprimer a tout moment, ou le recharger depuis le tableau de bord / les reglages.
-
----
-
-## Scripts npm
-
-| Script              | Action                                                            |
-| ------------------- | ----------------------------------------------------------------- |
-| `npm run dev`       | Lance frontend **et** backend en parallele (developpement).       |
-| `npm run dev:client`| Lance uniquement le frontend (Vite).                              |
-| `npm run dev:server`| Lance uniquement le backend (Express, rechargement a chaud).      |
-| `npm run server`    | Lance le backend seul (sans rechargement).                        |
-| `npm run build`     | Construit la version de production dans `dist/`.                  |
-| `npm run preview`   | Sert localement le build de production.                           |
-| `npm run typecheck` | Verifie tout le projet avec TypeScript (`tsc --noEmit`).          |
-
----
-
-## Depannage
-
-**L'import ne detecte pas bien la structure.**
-Verifiez que le backend tourne (`npm run dev:server`) et que `server/.env` contient une cle valide.
-Sinon, l'analyseur local prend le relais : separez clairement vos mouvements par des titres ou des
-lignes vides. Dans tous les cas, la page de validation vous laisse tout corriger a la main.
-
-**Aucun son lors de l'ecoute en boucle.**
-La synthese vocale depend du navigateur. Chrome, Edge et Safari fonctionnent le mieux. Verifiez
-qu'une voix francaise est disponible dans les Reglages et que le volume du systeme est actif.
-
-**Le port 8787 est deja utilise.**
-Changez `PORT` dans `server/.env` (et, si besoin, l'URL cible du proxy dans `vite.config.ts`).
-
-**Je veux repartir de zero.**
-Reglages -> reinitialiser les donnees. Pensez a exporter une sauvegarde JSON avant.
-
-**`npm run dev` n'ouvre rien.**
-Ouvrez manuellement http://localhost:5173. Verifiez qu'aucune autre application n'occupe ce port.
+- Speech synthesis quality depends entirely on the browser and the voices installed on the machine. It's noticeably better on Chrome/Edge than elsewhere, and there's no bundled TTS fallback.
+- The local fallback parser is much cruder than the Gemini-based one; if your text doesn't use clear headings or blank lines between "mouvements", you'll end up fixing the split by hand on the validation screen.
+- There's no sync between devices beyond manual JSON export/import, which is fine for my own use but wouldn't scale to sharing a set of texts with classmates.
+- I'd like to tune the spaced-repetition intervals with real usage data rather than the fixed table I started with, and add a way to compare recitation attempts against the reference text automatically instead of just self-rating.
