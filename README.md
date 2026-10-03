@@ -2,6 +2,8 @@
 
 A local web app / PWA for memorising the linear analyses ("oraux") I have to recite for the French bac. The app's interface is in French, since that's the language of the exam it's built for, but this README is in English.
 
+![The OralRevision dashboard, showing today's session and how well each paragraph is known](docs/screenshots/dashboard.png)
+
 ## Why I built it
 
 For the bac oral, you write out a full literary analysis for each text on your list and then have to recite it from memory, word for word, on the day. Learning ten-plus pages of prose by heart is a different problem from understanding it, and I wanted something built specifically for that: read the text out loud on a loop, get tested on it with a fill-in-the-blanks mode, and have the app tell me which paragraphs I'm about to forget based on an actual schedule rather than my own guess.
@@ -34,6 +36,18 @@ If the backend isn't running or has no API key, import falls back to a local par
 ## Data and privacy
 
 Everything stays in your browser's `localStorage`. The only thing that ever leaves your machine is the pasted text sent to Gemini at import time, and only if you're running the backend with a key configured. Every change is saved automatically; you can export your entire dataset to a JSON file from Settings and reimport it later or on another device.
+
+## Screenshots
+
+These were taken in a fresh browser with only the sample oral that ships with the app.
+
+![The fill-in-the-blanks mode hiding words in a paragraph](docs/screenshots/fill-in-the-blanks.png)
+
+Fill-in-the-blanks mode, with words hidden for me to recall.
+
+![The editor, with the oral split into sections and paragraphs](docs/screenshots/oral-editor.png)
+
+The editor, where an oral is split into sections and paragraphs.
 
 ## Running it locally
 
